@@ -1,0 +1,304 @@
+---
+title: "Environmental genotoxicity assessment using micronucleus test on intertidal mussel Perumytilus purpuratus. A tool for biomonitoring the Chilean coast"
+author: "Catalina A. Musrri"
+date: "20-06-2020"
+output:
+  html_document: 
+   toc: true # table of content true
+   theme: spacelab # fonts and colours
+   code_folding: hide # buttons to show/hide the code
+  pdf_document: default
+---
+
+## Clear the environment
+
+```{r}
+rm(list = ls())
+```
+
+_____________________________________________________________________________
+
+## Load packages
+
+_Before loading the packages install them using *install()*_
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(summarytools)
+library(dplyr)
+library(car)
+library(pander)
+library(knitr)
+library(sandwich)
+library(AER)
+library(MASS)
+```
+
+_____________________________________________________________________
+
+## **Part 1:** Data inspection 
+
+In this part the dataframe was inspected in order to check the variables names and type.  
+
+1) Import data
+
+```{r, warning=FALSE, message=FALSE, results='hide'}
+Micronucleus <- read.csv("Data/Micronucleus.csv")
+```
+
+2) Inspect structure of data frames
+
+```{r, warning=FALSE, message=FALSE}
+view(dfSummary(Micronucleus))
+```
+_______________________________________________________________
+
+## **Part 2:** Visualize differences between site and sampling 
+
+1) Generate plots 
+
+In this part the Figure 2 was created to visualize differences among sites and sampling for each nuclear abnormality. 
+
+```{r}
+#Set the right order of nuclear abnormalities in the plot
+Abnormalities.labs <- c( "Micronucleus", "Binucleated","Nuclear buds", "Total NA")
+names(Abnormalities.labs) <- c("MN", "Binucleated", "Nuclear_Buds", "Total_AN")
+Micronucleus$Abnormality <- factor(Micronucleus$Abnormality, levels=c('MN','Nuclear_Buds','Binucleated','Total_AN'))
+
+
+Micronucleus %>% 
+filter(Treatment == "No_treatment") %>% 
+ggplot(aes(x = Sampling, y = Number, fill = Site)) + 
+geom_boxplot()+
+theme_bw() + 
+theme(panel.grid.major = element_line(colour = "white"),
+panel.grid.minor = element_line(colour = "white")) + 
+labs( y="Abnormality (‰)", x="Sampling")+
+facet_wrap(Abnormality ~ ., 
+  labeller = labeller(Abnormality = Abnormalities.labs), scales = "free", ncol=2) + 
+scale_fill_manual(values=c("grey90", "darkslategray3")) +
+scale_x_discrete(limit = c("May-June", "August")) +
+theme(strip.text.x = element_text(color = "white"),  strip.text.y = element_text(color = "white"),  strip.background = element_rect(color="black", fill="grey50", size=0.2, linetype="solid"))
+
+```
+
+2) Save plot in tiff format 
+
+```{r}
+ggsave("Abnormalities.tiff", units="in", width=6, height=4, dpi=300, compression = 'lzw')
+```
+
+__________________________________________________________________
+
+## **Part 3:** Statystical analysis 
+
+In part 3, data was summarized and analyzed using linear models. First, the number of replicates and the mean per group were calculates for the Table S1.  
+
+### **3a)** Summarizing results 
+
+
+1) Count number of replicates
+
+```{r, warning=FALSE, message=FALSE, results='asis'}
+table1 <- Micronucleus %>% 
+group_by(Site, Sampling, Treatment) %>% 
+summarise(n_distinct(Replicate))
+kable(table1)
+```
+
+2) Calculate means for table  
+```{r, warning=FALSE, message=FALSE, results='asis'}
+table2 <- Micronucleus  %>% 
+group_by(Site, Sampling, Treatment, Abnormality) %>% 
+summarise(mean_a = mean(Number), sd_a = sd(Number))
+kable(table2)
+```
+_Treatment data was not used in this study but it was part of the work developed in the thesis from the author. If more information is needed, please feel free to send an email_
+
+### **3b)** Run linear model
+
+1) Filter the data
+
+```{r}
+Micronucleus <- mutate(Micronucleus, LogNumber = log(Number)) #Create log10 column in case transformation is needed
+MN_data <- Micronucleus %>% 
+  filter (Abnormality == "MN", Treatment == "No_treatment") #select just MN and No_treatment data 
+#NB
+NB_data <- Micronucleus %>% 
+ filter (Abnormality == "Nuclear_Buds", Treatment == "No_treatment")
+#BC
+BC_data <- Micronucleus %>% 
+  filter (Abnormality == "Binucleated", Treatment == "No_treatment")
+#Total NA
+TotalNA_data <- Micronucleus %>% 
+  filter (Abnormality == "Total_AN", Treatment == "No_treatment")
+```
+
+2) Run glm 
+
+Because of the overdispersion of the data a negative binomial GLM was used to analyze differences between site and sampling for each nuclear abnormality and the total nuclear abnormalities. This was done following the guide of the UCLA: [Poisson Regression | R Data Analysis Examples](https://stats.idre.ucla.edu/r/dae/poisson-regression/)
+
+```{r, results='hide', warning=FALSE, message=FALSE, fig.show='hide'}
+#MN
+glm.MN <- glm(Number ~ Site * Sampling, family = "poisson", data = MN_data)
+dispersiontest(glm.MN ,trafo=1) #Data is overdispersedin poisson glm
+plot(glm.MN)
+glm.MN <- glm.nb(Number ~ Site * Sampling, data = MN_data) # Run negative binomial
+summary(glm.MN) #AIC: 235.69
+plot(glm.MN) # Residuals distribution looks better 
+#Check results using robust standard errors
+cov.glm.MN <- vcovHC(glm.MN, type="HC0")
+std.err <- sqrt(diag(cov.glm.MN))
+r.est1 <- cbind(Estimate= coef(glm.MN), "Robust SE" = std.err,
+"Pr(>|z|)" = 2 * pnorm(abs(coef(glm.MN)/std.err), lower.tail=FALSE),
+LL = coef(glm.MN) - 1.96 * std.err,
+UL = coef(glm.MN) + 1.96 * std.err)
+r.est1
+#Check if the model fits
+with(glm.MN, cbind(res.deviance = deviance, df = df.residual,
+p = pchisq(deviance, df.residual, lower.tail=FALSE))) #The model fits well 
+
+#NB
+glm.NB <- glm.nb(Number ~ Site * Sampling, data = NB_data) # Run negative binomial
+summary(glm.NB)
+plot(glm.NB) # Residuals distribution looks better 
+cov.glm.NB <- vcovHC(glm.NB, type="HC0")
+std.err <- sqrt(diag(cov.glm.NB))
+r.est2 <- cbind(Estimate= coef(glm.NB), "Robust SE" = std.err,
+"Pr(>|z|)" = 2 * pnorm(abs(coef(glm.NB)/std.err), lower.tail=FALSE),
+LL = coef(glm.NB) - 1.96 * std.err,
+UL = coef(glm.NB) + 1.96 * std.err)
+r.est2
+with(glm.NB, cbind(res.deviance = deviance, df = df.residual,
+p = pchisq(deviance, df.residual, lower.tail=FALSE))) #The model fits well
+
+#BC
+glm.BC <- glm.nb(Number ~ Site * Sampling, data = BC_data) # Run negative binomial
+summary(glm.BC)
+plot(glm.BC) # Residuals distribution looks better 
+cov.glm.BC <- vcovHC(glm.BC, type="HC0")
+std.err <- sqrt(diag(cov.glm.BC))
+r.est3 <- cbind(Estimate= coef(glm.BC), "Robust SE" = std.err,
+"Pr(>|z|)" = 2 * pnorm(abs(coef(glm.BC)/std.err), lower.tail=FALSE),
+LL = coef(glm.BC) - 1.96 * std.err,
+UL = coef(glm.BC) + 1.96 * std.err)
+r.est3
+with(glm.BC, cbind(res.deviance = deviance, df = df.residual,
+p = pchisq(deviance, df.residual, lower.tail=FALSE))) #The model fits well
+
+#Total Na
+glm.TotalNA <- glm.nb(Number ~ Site * Sampling, data = TotalNA_data) # Run negative binomial
+summary(glm.TotalNA)
+plot(glm.TotalNA) # Residuals distribution looks better 
+cov.glm.TotalNA <- vcovHC(glm.TotalNA, type="HC0")
+std.err <- sqrt(diag(cov.glm.TotalNA))
+r.est4 <- cbind(Estimate= coef(glm.TotalNA), "Robust SE" = std.err,
+"Pr(>|z|)" = 2 * pnorm(abs(coef(glm.TotalNA)/std.err), lower.tail=FALSE),
+LL = coef(glm.TotalNA) - 1.96 * std.err,
+UL = coef(glm.TotalNA) + 1.96 * std.err)
+r.est4
+with(glm.TotalNA, cbind(res.deviance = deviance, df = df.residual,
+p = pchisq(deviance, df.residual, lower.tail=FALSE))) #The model fits well
+```
+
+MN Results 
+```{r}
+kable(r.est1)
+```
+
+NB Results 
+```{r}
+kable(r.est2)
+```
+
+BC Results 
+```{r}
+kable(r.est3)
+```
+
+Total NA Results 
+```{r}
+kable(r.est4)
+```
+
+4) Save results 
+```{r}
+write.csv(r.est1, "glm_MN.csv")
+write.csv(r.est2, "glm_NB.csv")
+write.csv(r.est3, "glm_BC1.csv")
+write.csv(r.est4, "glm_TotalNA.csv")
+```
+
+### **3c)** Linear regression size vz nuclear abnormalities 
+
+1) Check visual trends 
+
+```{r, warning=FALSE, message=FALSE}
+Abnormalities.labs <- c( "Micronucleus", "Binucleated","Nuclear buds", "Total NA")
+names(Abnormalities.labs) <- c("MN", "Binucleated", "Nuclear_Buds", "Total_AN")
+Micronucleus$Abnormality <- factor(Micronucleus$Abnormality, levels=c('MN','Nuclear_Buds','Binucleated','Total_AN'))
+Micronucleus %>% 
+filter(Sampling == "August")%>% 
+ggplot(aes(x = Length, y = Number)) + 
+geom_point()+
+theme_bw() + 
+theme(panel.grid.major = element_line(colour = "white"),
+panel.grid.minor = element_line(colour = "white")) + 
+labs( y="Abnormality (‰)", x="Sampling") +
+facet_wrap(Abnormality ~ ., 
+  labeller = labeller(Abnormality = Abnormalities.labs), scales = "free", ncol=2) +
+theme(strip.text.x = element_text(color = "white"),  strip.text.y = element_text(color = "white"),  strip.background = element_rect(color="black", fill="grey50", size=0.2, linetype="solid"))
+```
+
+2) Filter the data  
+
+```{r}
+MN_length <- Micronucleus %>% 
+  filter (Sampling == "August", Abnormality == "MN") 
+NB_length <- Micronucleus %>% 
+  filter (Sampling == "August", Abnormality == "Nuclear_Buds") 
+BC_length <- Micronucleus %>% 
+  filter (Sampling == "August", Abnormality == "Binucleated") 
+NA_length <- Micronucleus %>% 
+  filter (Sampling == "August", Abnormality == "Total_AN") 
+```
+
+3) Run linear models 
+
+Results MN
+```{r}
+#MN
+MN_lm <- lm(Number ~ Length, data = MN_length)
+summary(MN_lm)
+```
+
+Results NB
+```{r}
+#NB
+NB_lm <- lm(Number ~ Length, data = NB_length)
+summary(MN_lm)
+```
+
+Results BC
+```{r}
+#BC
+BC_lm <- lm(Number ~ Length, data = BC_length)
+summary(BC_lm)
+```
+
+Results Total NA
+```{r}
+#Total NA 
+TotalNA_lm <- lm(Number ~ Length, data = NA_length)
+summary(TotalNA_lm)
+```
+
+__________________________________________________________________________
+
+## **Part 4**: R Session Information
+
+In this part, information about the operating system and R packages attached during the production of this document can be found
+
+```{r}
+sessionInfo() %>% pander
+```
+
